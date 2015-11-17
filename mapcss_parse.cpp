@@ -1,7 +1,8 @@
-#include "mapcss_parse.h"
+#include "mapcss_parse.hpp"
 #include "common.hpp"
 
 #include <queue>
+#include <sstream>
 
 namespace mapcss
 {
@@ -9,14 +10,12 @@ namespace mapcss
 namespace
 {
 
-const TPositionAndLength InvalidValue = TPositionAndLength(std::string::npos, 0);
+TPositionAndLength const InvalidValue = TPositionAndLength(std::string::npos, 0);
 
 } // namespace
 
-TPositionAndLength FindProperty(std::string const & str, std::string const & property, std::string & value)
+TPositionAndLength FindProperty(std::string const & str, size_t pos, std::string const & property, std::string & value)
 {
-  size_t pos = 0;
-
   while (true)
   {
     pos = str.find(property, pos);
@@ -29,22 +28,22 @@ TPositionAndLength FindProperty(std::string const & str, std::string const & pro
     pos += property.length();
   }
 
-  size_t start = str.find(':', pos + 1);
+  size_t const start = str.find(':', pos + property.length());
   if (start == std::string::npos)
     return InvalidValue; // invalid value format
 
-  size_t end = str.find(';', start + 1);
+  size_t const end = str.find(';', start + 1);
   if (end == std::string::npos)
     return InvalidValue; // invalid value format
 
   value = std::string(str.begin() + start + 1, str.begin() + end);
-
   return TPositionAndLength(pos, end - pos + 1);
 }
 
 bool IsImportDirective(std::string const & s, std::string & path)
 {
   // @import ( " path " );
+  // WARNING @import is expected at the start of line
 
   size_t i = 0;
   while (i < s.length() && std::isspace(s[i])) ++i;
@@ -86,8 +85,7 @@ bool IsImportDirective(std::string const & s, std::string & path)
   return true;
 }
 
-void ReadProject(std::string const & filePath,
-                 std::function<void(LineInfo const & lineInfo, std::string & line)> const & fn)
+void ReadProject(std::string const & filePath, std::function<void(std::string const & filePath, std::string && fileContent)> fn)
 {
   std::queue<std::string> q;
   q.push(filePath);
@@ -97,11 +95,9 @@ void ReadProject(std::string const & filePath,
     std::string file = move(q.front());
     q.pop();
 
-    LineInfo li;
-    li.FilePath = file;
-    li.LineNo = 0;
-
     std::string folder = GetFolderPath(file);
+
+    std::ostringstream content;
 
     ForEachLine(file, [&](std::string & s)
     {
@@ -109,12 +105,13 @@ void ReadProject(std::string const & filePath,
       if (mapcss::IsImportDirective(s, import_file))
       {
         import_file = folder + import_file;
-        q.push(move(import_file));
+        q.push(std::move(import_file));
       }
 
-      fn(li, s);
-      ++li.LineNo;
+      content << s << std::endl;
     });
+
+    fn(file, content.str());
   }
 }
 

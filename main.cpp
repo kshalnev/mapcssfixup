@@ -1,13 +1,13 @@
 #include "common.hpp"
-#include "mapcss_parse.h"
+#include "mapcss_parse.hpp"
 
+#include <functional>
 #include <iostream>
 #include <list>
 #include <queue>
+#include <sstream>
 #include <string>
-#include <strstream>
 #include <unordered_map>
-#include <unordered_set>
 
 using TCoefficientTable = std::unordered_map<std::string, double>;
 
@@ -37,73 +37,6 @@ void InitCoefficientTable(TCoefficientTable & table, int argc, const char * argv
   }
 }
 
-std::string MultiplyValue(std::string const & str, double ratio)
-{
-  // Value can be
-  // <double>
-  // or
-  // <double> , <double>
-
-  std::strstream os;
-
-  size_t d = str.find(',');
-  if (d == std::string::npos)
-  {
-    std::string s = str;
-    Trim(s);
-
-    double v = std::stod(s);
-    v *= ratio;
-
-    os << v;
-  }
-  else
-  {
-    std::string s1(str.begin(), str.begin() + d);
-    std::string s2(str.begin() + d + 1, str.end());
-    Trim(s1);
-    Trim(s2);
-
-    double v1 = std::stod(s1);
-    double v2 = std::stod(s2);
-    v1 *= ratio;
-    v2 *= ratio;
-
-    os << v1 << "," << v2;
-  }
-
-  return os.str();
-}
-
-template <typename T>
-void Read(std::string const & project, T fn)
-{
-  std::queue<std::string> q;
-  q.push(project);
-
-  while (!q.empty())
-  {
-    std::string file = move(q.front());
-    q.pop();
-
-    std::string folder = GetFolderPath(file);
-    size_t line = 0;
-
-    ForEachLine(file, [&](std::string & s)
-    {
-      std::string import_file;
-      if (mapcss::IsImportDirective(s, import_file))
-      {
-        import_file = folder + import_file;
-        q.push(move(import_file));
-      }
-
-      fn(file, line, s);
-      ++line;
-    });
-  }
-}
-
 class MapcssConverter
 {
 public:
@@ -111,24 +44,31 @@ public:
     : m_table(move(table))
   {}
 
-  void operator()(std::string const & file, size_t /* line */, std::string & str)
+  void Process(std::string const & filePath, std::string && fileContent)
   {
-    bool const touched = Process(str);
-
-    AppendFileContent(file, str);
+    bool const touched = ProcessFile(fileContent);
 
     if (touched)
-      m_touched.insert(file);
+      m_files[filePath] = move(fileContent);
   }
 
   void Flush()
   {
-    for (auto const & f : m_touched)
-      WriteFile(f, m_files[f]);
+    for (auto const & fc : m_files)
+      WriteFile(fc.first, fc.second);
+    m_files.clear();
+  }
+
+  std::list<std::string> GetAffectedFiles() const
+  {
+    std::list<std::string> files;
+    for (auto const & fc : m_files)
+      files.emplace_back(fc.first);
+    return files;
   }
 
 private:
-  bool Process(std::string & str)
+  bool ProcessFile(std::string & content)
   {
     bool touched = false;
 
@@ -137,41 +77,92 @@ private:
       if (cc.second == 1.0)
         continue;
 
-      std::string value;
-      auto const pos = mapcss::FindProperty(str, cc.first, value);
-      if (pos.first == std::string::npos)
-        continue;
+      size_t pos = 0;
+      while (true)
+      {
+        std::string value;
+        auto const ppos = mapcss::FindProperty(content, pos, cc.first, value);
 
-      value = MultiplyValue(value, cc.second);
+        if (ppos.first == std::string::npos)
+          break;
 
-      str.erase(pos.first, pos.second);
-      str.insert(pos.first, cc.first + ": " + value + ";");
+        value = CorrectValue(value, cc.second);
 
-      touched = true;
+        std::string newProperty = cc.first + ": " + value + ";";
+        content.replace(ppos.first, ppos.second, newProperty);
+
+        pos = ppos.first + newProperty.length();
+
+        touched = true;
+      }
     }
 
     return touched;
   }
 
-  void AppendFileContent(std::string const & file, std::string const & content)
+  static std::string CorrectValue(std::string const & str, double ratio)
   {
-    m_files[file].emplace_back(content);
+    // Value can be:
+    //   <double>
+    // or
+    //   <double> , <double>
+    // or
+    //   eval(formula)
+    // or
+    //   <string> (like "butt")
+
+    if (str.find("eval") != std::string::npos)
+      return str;
+
+    try
+    {
+      std::ostringstream o;
+
+      size_t const d = str.find(',');
+      if (d == std::string::npos)
+      {
+        std::string s = str;
+        Trim(s);
+
+        double v = std::stod(s);
+        v *= ratio;
+
+        o << v;
+      }
+      else
+      {
+        std::string s1(str.begin(), str.begin() + d);
+        std::string s2(str.begin() + d + 1, str.end());
+        Trim(s1);
+        Trim(s2);
+
+        double v1 = std::stod(s1);
+        double v2 = std::stod(s2);
+        v1 *= ratio;
+        v2 *= ratio;
+
+        o << v1 << "," << v2;
+      }
+
+      return o.str();
+    }
+    catch (std::invalid_argument & e)
+    {
+      std::cout << "WARNING. Value \"" << str << "\" cannot be processed. " << e.what() << std::endl;
+      return str;
+    }
   }
 
-  void WriteFile(std::string const & file, std::list<std::string> const & content)
+  static void WriteFile(std::string const & file, std::string const & content)
   {
-    std::ofstream out(file);
-    for (auto const & s : content)
-      out << s << std::endl;
-    out.close();
+    std::ofstream o(file);
+    o << content;
+    o.close();
   }
 
-  std::unordered_set<std::string> m_touched;
-  std::unordered_map<std::string, std::list<std::string>> m_files;
-
-  TCoefficientTable m_table;
+  TCoefficientTable const m_table;
+  std::unordered_map<std::string, std::string> m_files;
 };
-
 
 int main(int argc, const char * argv [])
 {
@@ -184,7 +175,7 @@ int main(int argc, const char * argv [])
   try
   {
     std::string const file = argv[1];
-    std::cout << "Input mapcss file is " << file << std::endl;
+    std::cout << "Input mapcss project: " << file << std::endl;
 
     TCoefficientTable table;
     InitCoefficientTable(table, argc, argv);
@@ -193,7 +184,12 @@ int main(int argc, const char * argv [])
       std::cout << "Correction: " << kv.first << " x " << kv.second << std::endl;
 
     MapcssConverter converter(move(table));
-    Read(file, std::ref(converter));
+    mapcss::ReadProject(file, std::bind(&MapcssConverter::Process, &converter, std::placeholders::_1, std::placeholders::_2));
+
+    auto const & affectedFiles = converter.GetAffectedFiles();
+    std::cout << affectedFiles.size() << " files has been affected" << (affectedFiles.empty() ? "" : ":") << std::endl;
+    for (auto const & f : affectedFiles)
+      std::cout << "  " << f << std::endl;
 
     converter.Flush();
 
